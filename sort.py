@@ -31,6 +31,10 @@ import time
 import argparse
 from filterpy.kalman import KalmanFilter
 
+class CostFunction:
+    IOU = 'iou'
+    L2 = 'l2'
+
 # @jit
 def iou(bb_test,bb_gt):
   """
@@ -46,6 +50,18 @@ def iou(bb_test,bb_gt):
   o = wh / ((bb_test[2]-bb_test[0])*(bb_test[3]-bb_test[1])
     + (bb_gt[2]-bb_gt[0])*(bb_gt[3]-bb_gt[1]) - wh)
   return(o)
+
+def l2(bb_test,bb_gt):
+  center_test = [(bb_test[0] + bb_test[2])/2.0, (bb_test[1] + bb_test[3])/2.0]
+  center_gt = [(bb_gt[0] + bb_gt[2])/2.0, (bb_gt[1] + bb_gt[3])/2.0]
+  
+  avg_width = (bb_gt[2] - bb_gt[0] + bb_test[2] - bb_test[0])/2.0
+
+  #negative sign because original cost function iou returns the negative cost
+  return  -np.linalg.norm(np.array(center_test) - np.array(center_gt))/avg_width
+
+def assignment_cost(bb_test,bb_gt,cost_function='relative_distancce'):
+  return eval(cost_function)(bb_test,bb_gt)
 
 def convert_bbox_to_z(bbox):
   """
@@ -133,26 +149,31 @@ class KalmanBoxTracker(object):
     """
     return convert_x_to_bbox(self.kf.x)
 
-def associate_detections_to_trackers(detections,trackers,iou_threshold = 0.3):
+def associate_detections_to_trackers(detections, trackers, threshold = 0.3, cost_function=CostFunction.IOU):
   """
   Assigns detections to tracked object (both represented as bounding boxes)
 
   Returns 3 lists of matches, unmatched_detections and unmatched_trackers
   """
-  if(len(trackers)==0):
+  if len(trackers) == 0:
     return np.empty((0,2),dtype=int), np.arange(len(detections)), np.empty((0,5),dtype=int)
-  iou_matrix = np.zeros((len(detections),len(trackers)),dtype=np.float32)
+
+  cost_matrix = np.zeros((len(detections),len(trackers)),dtype=np.float32)
 
   for d,det in enumerate(detections):
     for t,trk in enumerate(trackers):
-      iou_matrix[d,t] = iou(det,trk)
-  matched_indices = linear_assignment(-iou_matrix)
+      cost_matrix[d,t] = assignment_cost(det, trk, cost_function=cost_function)
+
+  matched_indices = linear_assignment(-cost_matrix)
 
   unmatched_detections = []
+
   for d,det in enumerate(detections):
-    if(d not in matched_indices[:,0]):
+    if (d not in matched_indices[:,0]):
       unmatched_detections.append(d)
+
   unmatched_trackers = []
+
   for t,trk in enumerate(trackers):
     if(t not in matched_indices[:,1]):
       unmatched_trackers.append(t)
@@ -160,18 +181,18 @@ def associate_detections_to_trackers(detections,trackers,iou_threshold = 0.3):
   #filter out matched with low IOU
   matches = []
   for m in matched_indices:
-    if(iou_matrix[m[0],m[1]]<iou_threshold):
+    c = cost_matrix[m[0],m[1]]
+    if (cost_function == CostFunction.IOU and c < threshold) or (cost_function == CostFunction.L2 and c > threshold):
       unmatched_detections.append(m[0])
       unmatched_trackers.append(m[1])
     else:
       matches.append(m.reshape(1,2))
-  if(len(matches)==0):
+  if (len(matches)==0):
     matches = np.empty((0,2),dtype=int)
   else:
     matches = np.concatenate(matches,axis=0)
 
   return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
-
 
 
 class Sort(object):
@@ -184,7 +205,7 @@ class Sort(object):
     self.trackers = []
     self.frame_count = 0
 
-  def update(self, dets, iou_threshold=0.3):
+  def update(self, dets, threshold=0.3, cost_function=CostFunction.IOU):
     """
     Params:
       dets - a numpy array of detections in the format [[x1,y1,x2,y2,score],[x1,y1,x2,y2,score],...]
@@ -207,7 +228,8 @@ class Sort(object):
     trks = np.ma.compress_rows(np.ma.masked_invalid(trks))
     for t in reversed(to_del):
       self.trackers.pop(t)
-    matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(dets,trks, iou_threshold=iou_threshold)
+
+    matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(dets,trks, threshold=threshold, cost_function=cost_function)
     
     # Maintain assocations to det. If no association, this array has -1
     associations = [-1 for _ in  self.trackers]
@@ -232,6 +254,7 @@ class Sort(object):
 
     i = len(self.trackers) - 1
     ret_to_dets = []
+
     for trk in reversed(self.trackers):
         d = trk.get_state()[0]
         # If the tracker is valid, add trivially if unmatched (for smoothing) or validate hits
