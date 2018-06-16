@@ -60,7 +60,7 @@ def l2(bb_test,bb_gt):
   #negative sign because original cost function iou returns the negative cost
   return  -np.linalg.norm(np.array(center_test) - np.array(center_gt))/avg_width
 
-def assignment_cost(bb_test,bb_gt,cost_function='relative_distancce'):
+def assignment_cost(bb_test,bb_gt,cost_function=CostFunction.IOU):
   return eval(cost_function)(bb_test,bb_gt)
 
 def convert_bbox_to_z(bbox):
