@@ -38,7 +38,7 @@ class CostFunction:
 # @jit
 def iou(bb_test,bb_gt):
   """
-  Computes IUO between two bboxes in the form [x1,y1,x2,y2]
+  Computes IOU between two bboxes in the form [x1,y1,x2,y2]
   """
   xx1 = np.maximum(bb_test[0], bb_gt[0])
   yy1 = np.maximum(bb_test[1], bb_gt[1])
@@ -54,13 +54,14 @@ def iou(bb_test,bb_gt):
 def l2(bb_test,bb_gt):
   center_test = [(bb_test[0] + bb_test[2])/2.0, (bb_test[1] + bb_test[3])/2.0]
   center_gt = [(bb_gt[0] + bb_gt[2])/2.0, (bb_gt[1] + bb_gt[3])/2.0]
-  
+
   avg_width = (bb_gt[2] - bb_gt[0] + bb_test[2] - bb_test[0])/2.0
 
   #negative sign because original cost function iou returns the negative cost
   return  -np.linalg.norm(np.array(center_test) - np.array(center_gt))/avg_width
 
 def assignment_cost(bb_test,bb_gt,cost_function=CostFunction.IOU):
+
   return eval(cost_function)(bb_test,bb_gt)
 
 def convert_bbox_to_z(bbox):
@@ -95,9 +96,9 @@ class KalmanBoxTracker(object):
   This class represents the internel state of individual tracked objects observed as bbox.
   """
   count = 0
-  def __init__(self,bbox):
+  def __init__(self, bbox, obj_class=None):
     """
-    Initialises a tracker using initial bounding box.
+    Initialises a tracker using initial bounding box and object class.
     """
     #define constant velocity model
     self.kf = KalmanFilter(dim_x=7, dim_z=4)
@@ -116,6 +117,7 @@ class KalmanBoxTracker(object):
     KalmanBoxTracker.count += 1
     self.history = []
     self.hit_streak = 0
+    self.obj_class = obj_class
 
   def update(self,bbox):
     """
@@ -149,50 +151,57 @@ class KalmanBoxTracker(object):
     """
     return convert_x_to_bbox(self.kf.x)
 
-def associate_detections_to_trackers(detections, trackers, threshold = 0.3, cost_function=CostFunction.IOU):
-  """
-  Assigns detections to tracked object (both represented as bounding boxes)
+def associate_detections_to_trackers(
+        detections, trackers, threshold=0.3, cost_function=CostFunction.IOU):
+    """
+    Assigns detections to tracked object (both represented as bounding boxes), aware of object class
 
-  Returns 3 lists of matches, unmatched_detections and unmatched_trackers
-  """
-  if len(trackers) == 0:
-    return np.empty((0,2),dtype=int), np.arange(len(detections)), np.empty((0,5),dtype=int)
+    Returns 3 lists of matches, unmatched_detections and unmatched_trackers
+    """
+    if len(trackers) == 0:
+        return np.empty((0,2),dtype=int), np.arange(len(detections)), np.empty((0,5),dtype=int)
 
-  cost_matrix = np.zeros((len(detections),len(trackers)),dtype=np.float32)
+    cost_matrix = np.zeros((len(detections),len(trackers)),dtype=np.float32)
+    print('trackers: ' + str(trackers))
 
-  for d,det in enumerate(detections):
+    for d,det in enumerate(detections[0]):
+        for t,trk in enumerate(trackers[0]):
+            print('comparing %s with %s' % (detections[1][d], trackers[1][t]))
+            if detections[1][d] != trackers[1][t]:
+                cost_matrix[d, t] = np.inf
+            else:
+                cost_matrix[d, t] = assignment_cost(det[0], trk[0], cost_function=cost_function)
+
+    matched_indices = linear_assignment(-cost_matrix)
+
+    unmatched_detections = []
+
+    for d,det in enumerate(detections):
+        if (d not in matched_indices[:,0]):
+            unmatched_detections.append(d)
+
+    unmatched_trackers = []
+
     for t,trk in enumerate(trackers):
-      cost_matrix[d,t] = assignment_cost(det, trk, cost_function=cost_function)
+        if(t not in matched_indices[:,1]):
+            unmatched_trackers.append(t)
 
-  matched_indices = linear_assignment(-cost_matrix)
+    #filter out matched with low IOU
+    matches = []
+    for m in matched_indices:
+        c = cost_matrix[m[0],m[1]]
+        if (cost_function == CostFunction.IOU and c < threshold) or (cost_function == CostFunction.L2 and c > threshold):
+            unmatched_detections.append(m[0])
+            unmatched_trackers.append(m[1])
+        else:
+            matches.append(m.reshape(1,2))
 
-  unmatched_detections = []
-
-  for d,det in enumerate(detections):
-    if (d not in matched_indices[:,0]):
-      unmatched_detections.append(d)
-
-  unmatched_trackers = []
-
-  for t,trk in enumerate(trackers):
-    if(t not in matched_indices[:,1]):
-      unmatched_trackers.append(t)
-
-  #filter out matched with low IOU
-  matches = []
-  for m in matched_indices:
-    c = cost_matrix[m[0],m[1]]
-    if (cost_function == CostFunction.IOU and c < threshold) or (cost_function == CostFunction.L2 and c > threshold):
-      unmatched_detections.append(m[0])
-      unmatched_trackers.append(m[1])
+    if (len(matches)==0):
+        matches = np.empty((0,2),dtype=int)
     else:
-      matches.append(m.reshape(1,2))
-  if (len(matches)==0):
-    matches = np.empty((0,2),dtype=int)
-  else:
-    matches = np.concatenate(matches,axis=0)
+        matches = np.concatenate(matches,axis=0)
 
-  return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
+    return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
 
 
 class Sort(object):
@@ -208,10 +217,12 @@ class Sort(object):
   def update(self, dets, threshold=0.3, cost_function=CostFunction.IOU):
     """
     Params:
-      dets - a numpy array of detections in the format [[x1,y1,x2,y2,score],[x1,y1,x2,y2,score],...]
+      dets: a tuple of detection boxes and object classes,
+            dets[0] is a numpy matrix [[x1,y1,x2,y2,score],[x1,y1,x2,y2,score],...],
+            dets[1] is a list of object classes associated with each detection.
     Requires: this method must be called once for each frame even with empty detections.
 
-    Returns the a similar array, where the last column is the object ID.
+    Returns the a similar array as dets[0], where the last column is the object ID.
 
     NOTE: The number of objects returned may differ from the number of detections provided.
     """
@@ -220,17 +231,24 @@ class Sort(object):
     trks = np.zeros((len(self.trackers),5))
     to_del = []
     ret = []
+    trks_classes = []
     for t,trk in enumerate(trks):
       pos = self.trackers[t].predict()[0]
+      trks_classes.append(self.trackers[t].obj_class)
       trk[:] = [pos[0], pos[1], pos[2], pos[3], 0]
       if(np.any(np.isnan(pos))):
         to_del.append(t)
     trks = np.ma.compress_rows(np.ma.masked_invalid(trks))
     for t in reversed(to_del):
       self.trackers.pop(t)
+      trks_classes.pop(t)
+    # trackers_with_classes is same structure as dets
+    trackers_with_classes = (trks, trks_classes)
 
-    matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(dets,trks, threshold=threshold, cost_function=cost_function)
-    
+    matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(
+            dets, trackers_with_classes, threshold=threshold,
+            cost_function=cost_function)
+
     # Maintain assocations to det. If no association, this array has -1
     associations = [-1 for _ in  self.trackers]
 
@@ -240,17 +258,19 @@ class Sort(object):
         # d_idx = np.array([i1, i2, i3])
         d_idx = np.where(matched[:,1]==t)[0]
         d = matched[d_idx, 0]
-        trk.update(dets[d,:][0])
+        trk.update(dets[0][d,:][0])
         # We can do this because trackers are only added beyond
         # this point. So this index will be valid.
         associations[t] = d_idx[0]
 
     #create and initialise new trackers for unmatched detections
     for i in unmatched_dets:
-        trk = KalmanBoxTracker(dets[i,:])
+        trk = KalmanBoxTracker(dets[0][i,:], dets[1][i])
         # Attach class to new trackers
         self.trackers.append(trk)
         associations.append(i)
+
+    print('current trackers: ' + str(self.trackers))
 
     i = len(self.trackers) - 1
     ret_to_dets = []
@@ -272,7 +292,7 @@ class Sort(object):
     if(len(ret)>0):
       return np.concatenate(ret), ret_to_dets
     return np.empty((0,5)), ret_to_dets
-    
+
 def parse_args():
     """Parse input arguments."""
     parser = argparse.ArgumentParser(description='SORT demo')
@@ -294,11 +314,11 @@ if __name__ == '__main__':
       print('\n\tERROR: mot_benchmark link not found!\n\n    Create a symbolic link to the MOT benchmark\n    (https://motchallenge.net/data/2D_MOT_2015/#download). E.g.:\n\n    $ ln -s /path/to/MOT2015_challenge/2DMOT2015 mot_benchmark\n\n')
       exit()
     plt.ion()
-    fig = plt.figure() 
-  
+    fig = plt.figure()
+
   if not os.path.exists('output'):
     os.makedirs('output')
-  
+
   for seq in sequences:
     mot_tracker = Sort() #create instance of the SORT tracker
     seq_dets = np.loadtxt('data/%s/det.txt'%(seq),delimiter=',') #load detections
