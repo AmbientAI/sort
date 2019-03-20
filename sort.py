@@ -164,7 +164,7 @@ def associate_detections_to_trackers(
     cost_matrix = np.zeros((len(detections[0]),len(trackers[0])),dtype=np.float32)
 
     print('detections: ' + str(detections))
-
+    print('trackers: ' + str(trackers))
     for d,det in enumerate(detections[0]):
         for t,trk in enumerate(trackers[0]):
             if detections[1][d] != trackers[1][t]:
@@ -251,7 +251,6 @@ class Sort(object):
       trks_classes.pop(t)
     # trackers_with_classes is same structure as dets
     trackers_with_classes = (trks, trks_classes)
-    print('current trackers: ' + str(trks))
 
     matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(
             dets, trackers_with_classes, threshold=threshold,
@@ -273,7 +272,6 @@ class Sort(object):
 
     #create and initialise new trackers for unmatched detections
     for i in unmatched_dets:
-        print('created new tracker for %s' % dets[1][i])
         trk = KalmanBoxTracker(dets[0][i,:], dets[1][i])
         # Attach class to new trackers
         self.trackers.append(trk)
