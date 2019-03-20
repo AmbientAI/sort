@@ -161,18 +161,25 @@ def associate_detections_to_trackers(
     if len(trackers) == 0:
         return np.empty((0,2),dtype=int), np.arange(len(detections)), np.empty((0,5),dtype=int)
 
-    cost_matrix = np.zeros((len(detections),len(trackers)),dtype=np.float32)
-    print('trackers: ' + str(trackers))
+    cost_matrix = np.zeros((len(detections[0]),len(trackers[0])),dtype=np.float32)
+
+    print('detections: ' + str(detections))
 
     for d,det in enumerate(detections[0]):
         for t,trk in enumerate(trackers[0]):
-            print('comparing %s with %s' % (detections[1][d], trackers[1][t]))
             if detections[1][d] != trackers[1][t]:
-                cost_matrix[d, t] = np.inf
+                if cost_function == CostFunction.IOU:
+                    # For IOU, 0 is the "worst" IOU
+                    cost_matrix[d, t] = 0.0
+                if cost_function == CostFunction.L2:
+                    # For L2, lower = worse L2 (TODO: why is L2 still negative?)
+                    cost_matrix[d, t] = -np.inf
             else:
-                cost_matrix[d, t] = assignment_cost(det[0], trk[0], cost_function=cost_function)
+                cost_matrix[d, t] = assignment_cost(det, trk, cost_function=cost_function)
 
+    print('cost matrix: ' + str(cost_matrix))
     matched_indices = linear_assignment(-cost_matrix)
+    print('match indices: ' + str(matched_indices))
 
     unmatched_detections = []
 
@@ -244,6 +251,7 @@ class Sort(object):
       trks_classes.pop(t)
     # trackers_with_classes is same structure as dets
     trackers_with_classes = (trks, trks_classes)
+    print('current trackers: ' + str(trks))
 
     matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(
             dets, trackers_with_classes, threshold=threshold,
@@ -265,12 +273,11 @@ class Sort(object):
 
     #create and initialise new trackers for unmatched detections
     for i in unmatched_dets:
+        print('created new tracker for %s' % dets[1][i])
         trk = KalmanBoxTracker(dets[0][i,:], dets[1][i])
         # Attach class to new trackers
         self.trackers.append(trk)
         associations.append(i)
-
-    print('current trackers: ' + str(self.trackers))
 
     i = len(self.trackers) - 1
     ret_to_dets = []
