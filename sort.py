@@ -163,6 +163,10 @@ def associate_detections_to_trackers(
 
     cost_matrix = np.zeros((len(detections[0]),len(trackers[0])),dtype=np.float32)
 
+    # Assigns cost based on class match first, then based on the provided
+    # cost_function. If classes don't match, the linear_assignment will likely
+    # not match them (and if they do, it will be filtered out later). Note that
+    # in this code, HIGHER cost is BETTER.
     for d,det in enumerate(detections[0]):
         for t,trk in enumerate(trackers[0]):
             if detections[1][d] != trackers[1][t]:
@@ -191,19 +195,29 @@ def associate_detections_to_trackers(
         if(t not in matched_indices[:,1]):
             unmatched_trackers.append(t)
 
-    #filter out matched with low IOU
+    #filter out matched with low IOU or class mismatch
     matches = []
     for m in matched_indices:
         c = cost_matrix[m[0],m[1]]
-        # TODO: I think if using L2, c is always negative so it will never be >
-        # threshold (currently 20 in YML file), so detections and trackers will
-        # never be unmatched.
-        if ((cost_function == CostFunction.IOU and c < threshold) or
-            (cost_function == CostFunction.L2 and c > threshold)):
+        if detections[1][m[0]] != trackers[1][m[1]]:
+            # Class mismatch
             unmatched_detections.append(m[0])
             unmatched_trackers.append(m[1])
-        else:
-            matches.append(m.reshape(1,2))
+            continue
+
+        # TODO: I think if using L2, c is always negative so it will never be >
+        # threshold (currently 20 in YML file), so detections and trackers will
+        # never be unmatched by distance. Fix this and set a new threshold
+        # value.
+        if ((cost_function == CostFunction.IOU and c < threshold) or
+            (cost_function == CostFunction.L2 and c > threshold)):
+            # Low IOU / high distance
+            unmatched_detections.append(m[0])
+            unmatched_trackers.append(m[1])
+            continue
+
+        # Valid match, add to the final matches we return.
+        matches.append(m.reshape(1,2))
 
     if len(matches) == 0:
         matches = np.empty((0,2),dtype=int)
