@@ -177,9 +177,7 @@ def associate_detections_to_trackers(
             else:
                 cost_matrix[d, t] = assignment_cost(det, trk, cost_function=cost_function)
 
-    print('cost matrix: ' + str(cost_matrix))
     matched_indices = linear_assignment(-cost_matrix)
-    print('match indices: ' + str(matched_indices))
 
     unmatched_detections = []
 
