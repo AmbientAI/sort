@@ -163,8 +163,6 @@ def associate_detections_to_trackers(
 
     cost_matrix = np.zeros((len(detections[0]),len(trackers[0])),dtype=np.float32)
 
-    print('detections: ' + str(detections))
-    print('trackers: ' + str(trackers))
     for d,det in enumerate(detections[0]):
         for t,trk in enumerate(trackers[0]):
             if detections[1][d] != trackers[1][t]:
@@ -172,8 +170,10 @@ def associate_detections_to_trackers(
                     # For IOU, 0 is the "worst" IOU
                     cost_matrix[d, t] = 0.0
                 if cost_function == CostFunction.L2:
-                    # For L2, lower = worse L2 (TODO: why is L2 still negative?)
-                    cost_matrix[d, t] = -np.inf
+                    # For L2, lower = worse L2
+                    # TODO: replace this with -inf, but this breaks
+                    # linear_assignment, temporarily using -999
+                    cost_matrix[d, t] = -999
             else:
                 cost_matrix[d, t] = assignment_cost(det, trk, cost_function=cost_function)
 
@@ -183,13 +183,13 @@ def associate_detections_to_trackers(
 
     unmatched_detections = []
 
-    for d,det in enumerate(detections):
+    for d,det in enumerate(detections[0]):
         if (d not in matched_indices[:,0]):
             unmatched_detections.append(d)
 
     unmatched_trackers = []
 
-    for t,trk in enumerate(trackers):
+    for t,trk in enumerate(trackers[0]):
         if(t not in matched_indices[:,1]):
             unmatched_trackers.append(t)
 
@@ -197,13 +197,17 @@ def associate_detections_to_trackers(
     matches = []
     for m in matched_indices:
         c = cost_matrix[m[0],m[1]]
-        if (cost_function == CostFunction.IOU and c < threshold) or (cost_function == CostFunction.L2 and c > threshold):
+        # TODO: I think if using L2, c is always negative so it will never be >
+        # threshold (currently 20 in YML file), so detections and trackers will
+        # never be unmatched.
+        if ((cost_function == CostFunction.IOU and c < threshold) or
+            (cost_function == CostFunction.L2 and c > threshold)):
             unmatched_detections.append(m[0])
             unmatched_trackers.append(m[1])
         else:
             matches.append(m.reshape(1,2))
 
-    if (len(matches)==0):
+    if len(matches) == 0:
         matches = np.empty((0,2),dtype=int)
     else:
         matches = np.concatenate(matches,axis=0)
@@ -283,7 +287,10 @@ class Sort(object):
     for trk in reversed(self.trackers):
         d = trk.get_state()[0]
         # If the tracker is valid, add trivially if unmatched (for smoothing) or validate hits
-        if (trk.time_since_update < self.max_age) and (i in unmatched_trks or trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits):
+        if ((trk.time_since_update < self.max_age) and
+            (i in unmatched_trks or
+             trk.hit_streak >= self.min_hits or
+             self.frame_count <= self.min_hits)):
           ret.append(np.concatenate((d,[trk.id+1])).reshape(1,-1)) # +1 as MOT benchmark requires positive
           # NB: This may be -1 if tracker was unmatched
           ret_to_dets.append(associations[i])
