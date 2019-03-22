@@ -154,22 +154,30 @@ class KalmanBoxTracker(object):
 def associate_detections_to_trackers(
         detections, trackers, threshold=0.3, cost_function=CostFunction.IOU):
     """
-    Assigns detections to tracked object (both represented as bounding boxes), aware of object class
+    Assigns detections to tracked object (both represented as bounding boxes),
+    aware of object class.
 
-    Returns 3 lists of matches, unmatched_detections and unmatched_trackers
+    Args:
+      detections: list of 3-tuples of (bbox, confidence, object class)
+      trackers: list of 3-tuples, same structure as detections
+      threshold: threshold for match based on cost function
+      cost_function: iou or l2
+
+    Returns:
+      3 lists of matches, unmatched_detections and unmatched_trackers
     """
     if len(trackers) == 0:
         return np.empty((0,2),dtype=int), np.arange(len(detections)), np.empty((0,5),dtype=int)
 
-    cost_matrix = np.zeros((len(detections[0]),len(trackers[0])),dtype=np.float32)
+    cost_matrix = np.zeros((len(detections),len(trackers)),dtype=np.float32)
 
     # Assigns cost based on class match first, then based on the provided
     # cost_function. If classes don't match, the linear_assignment will likely
     # not match them (and if they do, it will be filtered out later). Note that
     # in this code, HIGHER cost is BETTER.
-    for d,det in enumerate(detections[0]):
-        for t,trk in enumerate(trackers[0]):
-            if detections[1][d] != trackers[1][t]:
+    for d, det in enumerate(detections):
+        for t, trk in enumerate(trackers):
+            if det[2] != trk[2]:
                 if cost_function == CostFunction.IOU:
                     # For IOU, 0 is the "worst" IOU
                     cost_matrix[d, t] = 0.0
@@ -179,27 +187,29 @@ def associate_detections_to_trackers(
                     # linear_assignment, temporarily using -999
                     cost_matrix[d, t] = -999
             else:
-                cost_matrix[d, t] = assignment_cost(det, trk, cost_function=cost_function)
+                # Note: currently confidence (det[1]) is not used.
+                cost_matrix[d, t] = assignment_cost(
+                        det[0], trk[0], cost_function=cost_function)
 
     matched_indices = linear_assignment(-cost_matrix)
 
     unmatched_detections = []
 
-    for d,det in enumerate(detections[0]):
-        if (d not in matched_indices[:,0]):
+    for d, det in enumerate(detections):
+        if d not in matched_indices[:, 0]:
             unmatched_detections.append(d)
 
     unmatched_trackers = []
 
-    for t,trk in enumerate(trackers[0]):
-        if(t not in matched_indices[:,1]):
+    for t, trk in enumerate(trackers):
+        if t not in matched_indices[:,1]:
             unmatched_trackers.append(t)
 
     #filter out matched with low IOU or class mismatch
     matches = []
     for m in matched_indices:
-        c = cost_matrix[m[0],m[1]]
-        if detections[1][m[0]] != trackers[1][m[1]]:
+        c = cost_matrix[m[0], m[1]]
+        if detections[m[0]][2] != trackers[m[1]][2]:
             # Class mismatch
             unmatched_detections.append(m[0])
             unmatched_trackers.append(m[1])
@@ -240,17 +250,22 @@ class Sort(object):
   def update(self, dets, threshold=0.3, cost_function=CostFunction.IOU):
     """
     Params:
-      dets: a tuple of detection boxes and object classes,
-            dets[0] is a numpy matrix [[x1,y1,x2,y2,score],[x1,y1,x2,y2,score],...],
-            dets[1] is a list of object classes associated with each detection.
+      dets: a list of 3-length tuples, each corresponding to a detected entity,
+        elements in the tuple are: (bbox, confidence, object class), e.g.
+        [([1.0, 1.0, 2.0, 2.0], 0.9, 'person'),
+         ([3.0, 3.0, 4.0, 4.0], 0.8, 'car'), ...]
+
     Requires: this method must be called once for each frame even with empty detections.
 
-    Returns the a similar array as dets[0], where the last column is the object ID.
+    Returns:
+      a n*(4+1) np.ndarray, the first 4 columns are the bbox and the last column is
+      the object ID.
 
     NOTE: The number of objects returned may differ from the number of detections provided.
     """
     self.frame_count += 1
     #get predicted locations from existing trackers.
+    '''
     trks = np.zeros((len(self.trackers),5))
     to_del = []
     ret = []
@@ -267,35 +282,48 @@ class Sort(object):
       trks_classes.pop(t)
     # trackers_with_classes is same structure as dets
     trackers_with_classes = (trks, trks_classes)
+    '''
+    trks = []  # same structure as dets
+    to_del = []
+    for t, tracker in enumerate(self.trackers):
+        pos = tracker.predict()[0]
+        trk_cls = tracker.obj_class
+        if np.any(np.isnan(pos)):
+            to_del.append(t)
+        else:
+            trks.append((pos[:4], 0, trk_cls))
+
+    for t in reversed(to_del):
+        self.trackers.pop(t)
 
     matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(
-            dets, trackers_with_classes, threshold=threshold,
+            dets, trks, threshold=threshold,
             cost_function=cost_function)
 
     # Maintain assocations to det. If no association, this array has -1
     associations = [-1 for _ in  self.trackers]
 
     #update matched trackers with assigned detections
-    for t,trk in enumerate(self.trackers):
-      if(t not in unmatched_trks):
+    for t, trk in enumerate(self.trackers):
+      if t not in unmatched_trks:
         # d_idx = np.array([i1, i2, i3])
         d_idx = np.where(matched[:,1]==t)[0]
-        d = matched[d_idx, 0]
-        trk.update(dets[0][d,:][0])
+        d = matched[d_idx, 0][0]
+        trk.update(dets[d][0])
         # We can do this because trackers are only added beyond
         # this point. So this index will be valid.
         associations[t] = d_idx[0]
 
     #create and initialise new trackers for unmatched detections
     for i in unmatched_dets:
-        trk = KalmanBoxTracker(dets[0][i,:], dets[1][i])
+        trk = KalmanBoxTracker(dets[i][0], dets[i][2])
         # Attach class to new trackers
         self.trackers.append(trk)
         associations.append(i)
 
     i = len(self.trackers) - 1
+    ret = []
     ret_to_dets = []
-
     for trk in reversed(self.trackers):
         d = trk.get_state()[0]
         # If the tracker is valid, add trivially if unmatched (for smoothing) or validate hits
