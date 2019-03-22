@@ -184,8 +184,8 @@ def associate_detections_to_trackers(
                 if cost_function == CostFunction.L2:
                     # For L2, lower = worse L2
                     # TODO: replace this with -inf, but this breaks
-                    # linear_assignment, temporarily using -999
-                    cost_matrix[d, t] = -999
+                    # linear_assignment, temporarily using -99
+                    cost_matrix[d, t] = -99
             else:
                 # Note: currently confidence (det[1]) is not used.
                 cost_matrix[d, t] = assignment_cost(
