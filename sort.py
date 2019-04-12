@@ -35,7 +35,11 @@ import collections
 
 TrackedObject = collections.namedtuple(
     'TrackedObject',
-    ['bbox', 'tracked_id', 'object_class', 'original_index'],
+    ['bbox',                # numpy array with shape [4]
+     'tracked_id',          # tracked ID (1-indexed)
+     'object_class',        # object class name
+     # index into the original list of dets or -1 if no matched detections
+     'original_index'],
     verbose=False)
 
 
@@ -266,8 +270,7 @@ class Sort(object):
     Requires: this method must be called once for each frame even with empty detections.
 
     Returns:
-      a n*(4+1) np.ndarray, the first 4 columns are the bbox and the last column is
-      the object ID.
+        list of TrackedObjects
 
     NOTE: The number of objects returned may differ from the number of detections provided.
     """
