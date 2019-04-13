@@ -30,6 +30,18 @@ import glob
 import time
 import argparse
 from filterpy.kalman import KalmanFilter
+import collections
+
+
+TrackedObject = collections.namedtuple(
+    'TrackedObject',
+    ['bbox',                # numpy array with shape [4]
+     'tracked_id',          # tracked ID (1-indexed)
+     'object_class',        # object class name
+     # index into the original list of dets or -1 if no matched detections
+     'original_index'],
+    verbose=False)
+
 
 class CostFunction:
     IOU = 'iou'
@@ -96,7 +108,7 @@ class KalmanBoxTracker(object):
   This class represents the internel state of individual tracked objects observed as bbox.
   """
   count = 0
-  def __init__(self, bbox, obj_class=None):
+  def __init__(self, bbox, obj_class):
     """
     Initialises a tracker using initial bounding box and object class.
     """
@@ -202,7 +214,7 @@ def associate_detections_to_trackers(
     unmatched_trackers = []
 
     for t, trk in enumerate(trackers):
-        if t not in matched_indices[:,1]:
+        if t not in matched_indices[:, 1]:
             unmatched_trackers.append(t)
 
     #filter out matched with low IOU or class mismatch
@@ -258,8 +270,7 @@ class Sort(object):
     Requires: this method must be called once for each frame even with empty detections.
 
     Returns:
-      a n*(4+1) np.ndarray, the first 4 columns are the bbox and the last column is
-      the object ID.
+        list of TrackedObjects
 
     NOTE: The number of objects returned may differ from the number of detections provided.
     """
@@ -282,7 +293,8 @@ class Sort(object):
             dets, trks, threshold=threshold,
             cost_function=cost_function)
 
-    # Maintain assocations to det. If no association, this array has -1
+    # Maintain assocations of tracker to det. If no association, this array
+    # has -1
     associations = [-1 for _ in  self.trackers]
 
     #update matched trackers with assigned detections
@@ -308,24 +320,24 @@ class Sort(object):
     ret_to_dets = []
     for trk in reversed(self.trackers):
         d = trk.get_state()[0]
-        # If the tracker is valid, add trivially if unmatched (for smoothing) or validate hits
+        # If the tracker is valid, add trivially if unmatched (for smoothing)
+        # or validate hits
         if ((trk.time_since_update < self.max_age) and
             (i in unmatched_trks or
              trk.hit_streak >= self.min_hits or
              self.frame_count <= self.min_hits)):
-          ret.append(np.concatenate((d,[trk.id+1])).reshape(1,-1)) # +1 as MOT benchmark requires positive
-          # NB: This may be -1 if tracker was unmatched
-          ret_to_dets.append(associations[i])
+          ret.append(TrackedObject(
+              bbox=d, tracked_id=trk.id + 1,
+              object_class=trk.obj_class, original_index=associations[i]))
 
         # Remove dead tracklet
         if trk.time_since_update > self.max_age:
           self.trackers.pop(i)
-
+          # Don't need to pop from associations because it is created from
+          # the tracker list at each frame.
         i -= 1
 
-    if(len(ret)>0):
-      return np.concatenate(ret), ret_to_dets
-    return np.empty((0,5)), ret_to_dets
+    return ret
 
 def parse_args():
     """Parse input arguments."""
