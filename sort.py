@@ -207,16 +207,6 @@ def associate_detections_to_trackers(detections,
                         det[0], trk[0], cost_function=cost_function)
 
     matched_indices = linear_assignment(-cost_matrix)
-    '''
-    print('dets:')
-    print(detections)
-    print('trks:')
-    print(trackers)
-    print('matches:')
-    print(matched_indices)
-    print('-----')
-    '''
-
     unmatched_detections = []
 
     for d, det in enumerate(detections):
