@@ -308,7 +308,7 @@ class Sort(object):
             # TODO(chris): replace this print with assert when we are confident
             # assert dets[det_idx][2] == trk.obj_class
             if dets[det_idx][2] != trk.obj_class:
-                print('[WARNING] tracking class does not match detection class')
+                print('[ERROR] tracking class does not match detection class')
             trk.update(dets[det_idx][0])
             # We can do this because trackers are only added beyond
             # this point. So this index will be valid.
