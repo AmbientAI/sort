@@ -305,7 +305,10 @@ class Sort(object):
             # d_idx = np.array([i1, i2, i3])
             det_match_idx = np.nonzero(matched[:,1]==t)[0][0]
             det_idx = matched[det_match_idx, 0]
-            assert dets[det_idx][2] == trk.obj_class
+            # TODO(chris): replace this print with assert when we are confident
+            # assert dets[det_idx][2] == trk.obj_class
+            if dets[det_idx][2] != trk.obj_class:
+                print('[WARNING] tracking class does not match detection class')
             trk.update(dets[det_idx][0])
             # We can do this because trackers are only added beyond
             # this point. So this index will be valid.
