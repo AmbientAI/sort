@@ -25,13 +25,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from skimage import io
-from sklearn.utils.linear_assignment_ import linear_assignment
+from sklearn.utils.linear_assignment_ import linear_assignment  
+    # solves linear assignment problem with Hungarian algorithm
 import glob
 import time
 import argparse
 from filterpy.kalman import KalmanFilter
 import collections
 
+# Default parameters
+# Best practice: overwrite them all in model config yml file
+DEFAULT_COST_FUNCTION = 'iou'
+DEFAULT_MAX_AGE = 5
+DEFAULT_MIN_HITS = 2
+DEFAULT_THRESHOLD = 0.3
 
 TrackedObject = collections.namedtuple(
     'TrackedObject',
@@ -64,6 +71,12 @@ def iou(bb_test,bb_gt):
     return(o)
 
 def l2(bb_test,bb_gt):
+    '''
+    returns (l2 distance between two bboxes' centers) / (average width of the 2 bboxes)
+    TODO(ferdinand): investigate the negative return value
+    '''
+
+    # center: center of bbox
     center_test = [(bb_test[0] + bb_test[2])/2.0, (bb_test[1] + bb_test[3])/2.0]
     center_gt = [(bb_gt[0] + bb_gt[2])/2.0, (bb_gt[1] + bb_gt[3])/2.0]
 
@@ -106,48 +119,78 @@ def convert_x_to_bbox(x,score=None):
 class KalmanBoxTracker(object):
     """
     This class represents the internel state of individual tracked objects observed as bbox.
+    1 KalmanBoxTracker object <-> 1 trajectory/id
     """
-    count = 0
+    count = 0       # global initialization of tracker indices
     def __init__(self, bbox, obj_class):
         """
         Initialises a tracker using initial bounding box and object class.
+        
+        Args
+            bbox in format (xtl, ytl, xbr, ybr)
+
+        Kalman filter internal state is (x,y,s,r,x_dot,y_dot,s_dot), yet bbox is fed in
+        format (xtl, ytl, xbr, ybr) for convenience
         """
         #define constant velocity model
         self.kf = KalmanFilter(dim_x=7, dim_z=4)
+            # from SORT paper, x = [u, v, s, r, u_dot, v_dot, s_dot]
+                # u,v: topleft bbox coordinates
+                # s,r: scale, ratio of bbox
+                # no r_dot because assumption: constant aspect ratio
         self.kf.F = np.array([[1,0,0,0,1,0,0],[0,1,0,0,0,1,0],[0,0,1,0,0,0,1],[0,0,0,1,0,0,0],  [0,0,0,0,1,0,0],[0,0,0,0,0,1,0],[0,0,0,0,0,0,1]])
         self.kf.H = np.array([[1,0,0,0,0,0,0],[0,1,0,0,0,0,0],[0,0,1,0,0,0,0],[0,0,0,1,0,0,0]])
 
+        #TODO(ferdinand): assess whether those parameters should be tuned
         self.kf.R[2:,2:] *= 10.
         self.kf.P[4:,4:] *= 1000. #give high uncertainty to the unobservable initial velocities
         self.kf.P *= 10.
         self.kf.Q[-1,-1] *= 0.01
         self.kf.Q[4:,4:] *= 0.01
 
-        self.kf.x[:4] = convert_bbox_to_z(bbox)
+        self.kf.x[:4] = convert_bbox_to_z(bbox)     
         self.time_since_update = 0
         self.id = KalmanBoxTracker.count
         KalmanBoxTracker.count += 1
-        self.history = []
-        self.hit_streak = 0
+        self.history = []       # history of bboxes since last update
+        self.hit_streak = 0     # hit_streak: length of trajectory since first detection
         self.obj_class = obj_class
 
     def update(self,bbox):
       """
       Updates the state vector with observed bbox.
+
+      Args
+        bbox in format (xtl, ytl, xbr, ybr)
       """
       self.time_since_update = 0
       self.history = []
       self.hit_streak += 1
       self.kf.update(convert_bbox_to_z(bbox))
+        #QUESTION(ferdinand)
+        # convert_bbox_to_z(bbox) has dim 4, self.kf = KalmanFilter(dim_x=7, dim_z=4) --> dimensionality?
 
     def predict(self):
         """
         Advances the state vector and returns the predicted bounding box estimate.
+
+        Returns 
+            bbox in format (xtl,ytl,xbr,ybr)
         """
         if((self.kf.x[6]+self.kf.x[2])<=0):
             self.kf.x[6] *= 0.0
 
         self.kf.predict()
+
+        # How to handle hit_streak?
+            # Default behavior was to reset hit_streak each time a tracker is unmatched
+            # Example: prediction computed at time t, but doesn't match any detection
+            # So trk is unmatched at t, added to tracked_objs
+            # At t+1, if tracker is matched, then hit_streak +=1 --> =1
+            # It is not added to tracked_obj because it is not unmatched and 
+            # the condition hit_streak >= min_hits is not True
+            # If hit_streak is kept (not set to 0), then hit_streak >= min_hits is True 
+            # and object is added to tracked_objs
 
         # NB(@vikesh): Maintain hit streak even if time_since_update > 0
         # This is necessary to for good smoothing. Otherwise, when the ID is re-acquired,
@@ -160,7 +203,8 @@ class KalmanBoxTracker(object):
 
     def get_state(self):
         """
-        Returns the current bounding box estimate.
+        Returns the current bounding box estimate in format (xtl,ytl,xbr,ybr)
+
         """
         return convert_x_to_bbox(self.kf.x)
 
@@ -174,12 +218,17 @@ def associate_detections_to_trackers(detections,
 
     Args:
       detections: list of 3-tuples of (bbox, confidence, object class)
+        - aka detections at t (current frame)
       trackers: list of 3-tuples, same structure as detections
+        - predicted positions of objects at t based on positions at t-1
       threshold: threshold for match based on cost function
       cost_function: iou or l2
 
     Returns:
-      3 lists of matches, unmatched_detections and unmatched_trackers
+      3 lists
+      - matches: [[det_ind_i1, trk_ind_j1],[det_ind_i2, trk_ind_j2],...], probably np.array
+      - unmactched_detections: indices of the detections from det that have not been matched
+      - unmatched_trackers: indices of the trackers from det that have not been matched
     """
     if len(trackers) == 0:
         return np.empty((0,2),dtype=int), np.arange(len(detections)), np.empty((0,5),dtype=int)
@@ -192,7 +241,7 @@ def associate_detections_to_trackers(detections,
     # in this code, HIGHER cost is BETTER.
     for d, det in enumerate(detections):
         for t, trk in enumerate(trackers):
-            if det[2] != trk[2]:
+            if det[2] != trk[2]:        # if object_class differs, assign worst possible cost
                 if cost_function == CostFunction.IOU:
                     # For IOU, 0 is the "worst" IOU
                     cost_matrix[d, t] = 0.0
@@ -203,10 +252,14 @@ def associate_detections_to_trackers(detections,
                     cost_matrix[d, t] = -99
             else:
                 # Note: currently confidence (det[1]) is not used.
+                # TODO(ferdinand): investigate using object detection confidence
                 cost_matrix[d, t] = assignment_cost(
                         det[0], trk[0], cost_function=cost_function)
 
     matched_indices = linear_assignment(-cost_matrix)
+        # solves the linear assignment problem using the Hungarian algorithm
+        # matched_indices = [[det_ind_i1, trk_ind_j1],[det_ind_i1, trk_ind_j2],...]
+
     unmatched_detections = []
 
     for d, det in enumerate(detections):
@@ -233,6 +286,7 @@ def associate_detections_to_trackers(detections,
         # threshold (currently 20 in YML file), so detections and trackers will
         # never be unmatched by distance. Fix this and set a new threshold
         # value.
+        # TODO(ferdinand) investigate L2 threshold
         if ((cost_function == CostFunction.IOU and c < threshold) or
             (cost_function == CostFunction.L2 and c > threshold)):
             # Low IOU / high distance
@@ -255,6 +309,9 @@ class Sort(object):
   def __init__(self,max_age=5,min_hits=3):
     """
     Sets key parameters for SORT
+    Args
+        max_age: when object is not detected, tracking algo predicts and outputs 
+                 max_age positions from the time lost
     """
     self.max_age = max_age
     self.min_hits = min_hits
@@ -265,7 +322,9 @@ class Sort(object):
     """
     Params:
       dets: a list of 3-length tuples, each corresponding to a detected entity,
-        elements in the tuple are: (bbox, confidence, object class), e.g.
+        elements in the tuple are: (bbox, confidence, object class), with bbox in
+        format (x_topleft,y_topleft,x_bottomright,y_bottomright)
+        e.g.
         [([1.0, 1.0, 2.0, 2.0], 0.9, 'person'),
          ([3.0, 3.0, 4.0, 4.0], 0.8, 'car'), ...]
 
@@ -277,9 +336,14 @@ class Sort(object):
     NOTE: The number of objects returned may differ from the number of detections provided.
     """
     self.frame_count += 1
-    #get predicted locations from existing trackers.
-    trks = []  # same structure as dets
+    trks = []  # predicted locations from existing trackers
+        # same structure as dets
     to_del = []
+
+    # self.trackers: trackers from previous frame (aka t-1)
+    # for each tracker (position at t-1), predict position at t
+    # store positions at t in trks
+
     for t, tracker in enumerate(self.trackers):
         pos = tracker.predict()[0]
         trk_cls = tracker.obj_class
@@ -288,16 +352,22 @@ class Sort(object):
         else:
             trks.append((pos[:4], 0, trk_cls))
 
+    # curate (remove NaNs, does not seem to be key to algo)
     for t in reversed(to_del):
         self.trackers.pop(t)
 
+    # Associate 
+    #   - detections at t, aka dets, with 
+    #   - predicted positions at t, aka trks
     matched, unmatched_dets, unmatched_trks = associate_detections_to_trackers(
             dets, trks, threshold=threshold,
             cost_function=cost_function)
 
     # Maintain assocations of tracker to det. If no association, this array
     # has -1
+    # associations[i] = j means that self.trackers[i] is associated to dets[j] 
     associations = [-1 for _ in  self.trackers]
+        # new detections will be appended at the end of associations
 
     # update matched trackers with assigned detections
     for t, trk in enumerate(self.trackers):
@@ -320,6 +390,7 @@ class Sort(object):
     # create and initialise new trackers for unmatched detections
     for i in unmatched_dets:
         trk = KalmanBoxTracker(dets[i][0], dets[i][2])
+            # dets: (bbox, confidence, object_class)
         # Attach class to new trackers
         self.trackers.append(trk)
         associations.append(i)
@@ -330,10 +401,20 @@ class Sort(object):
         d = trk.get_state()[0]
         # If the tracker is valid, add trivially if unmatched (for smoothing)
         # or validate hits
+        # Key part of code:
         if ((trk.time_since_update < self.max_age) and
             (i in unmatched_trks or
              trk.hit_streak >= self.min_hits or
              self.frame_count <= self.min_hits)):
+                # if frame_count < min_hits, aka first frames of video, add all track_ids
+                
+                # Remark: adding all unmatched trks means that the algo propages all 
+                # unmatched tracks for max_age frames from last detection
+
+                # Remark: the min_hits threshold means that the first
+                # (min_hits-1) steps of the trajectory are discarded
+                # This is done to minimize false positives
+
             ret.append(TrackedObject(
                 bbox=d, tracked_id=trk.id + 1,
                 object_class=trk.obj_class,
