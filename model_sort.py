@@ -29,11 +29,11 @@ import yaml
 class ModelSort():
 
     def __init__(self, cost_function, threshold, max_age, min_hits):
-        '''
+        """
         Parameters of tracking algorithm are shared across all streams
 
         Args: see sort.py
-        '''
+        """
 
         self.streams_trackers       = {}    # {stream_id:SORT object}
         self.max_age                = max_age
@@ -43,7 +43,7 @@ class ModelSort():
 
     @staticmethod
     def conf(config_path):
-        '''
+        """
         Static method used to instantiate a ModelSort object with parameters 
         specified in model config file at config_path
 
@@ -54,7 +54,7 @@ class ModelSort():
               way as in model_maskrcnn.py
 
         Returns ModelSort object
-        '''
+        """
 
         # Load config file
         with open(config_path) as fin:
@@ -72,10 +72,10 @@ class ModelSort():
 
 
     def add_stream_tracker(self,stream_identifier):
-        '''
+        """
         Adds a stream_tracker to the streams_trackers dictionary.
         All stream_trackers have same parameters.
-        '''
+        """
 
         self.streams_trackers[stream_identifier] = sort.Sort(
                     max_age   = self.max_age,
