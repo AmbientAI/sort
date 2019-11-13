@@ -36,7 +36,7 @@ from filterpy.kalman import KalmanFilter
 import collections
 
 # Default parameters
-# Best practice: overwrite them all in model config yml file
+# Can be overwritten in model config yml file
 DEFAULT_COST_FUNCTION = 'iou'
 DEFAULT_MAX_AGE       = 5
 DEFAULT_MIN_HITS      = 2
@@ -50,7 +50,6 @@ TrackedObject = collections.namedtuple(
      # index into the original list of dets or -1 if no matched detections
      'original_index'],
     verbose=False)
-
 
 class CostFunction:
     IOU = 'iou'
